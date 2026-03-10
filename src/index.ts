@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as music from "./music.ts";
-import { estimateBpmRange, getGenreBpmMap } from "./bpm.ts";
+
 import { lookupSong } from "./wikidata.ts";
 
 const server = new McpServer({
@@ -268,10 +268,8 @@ server.registerTool("get_track_details", {
   },
 }, async ({ persistentID }) => {
   const details = await music.getTrackDetails(persistentID);
-  const bpmEstimate = details.bpm === 0 ? estimateBpmRange(details.genre) : undefined;
-  const result = bpmEstimate ? { ...details, estimatedBpmRange: bpmEstimate } : details;
   return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
   };
 });
 
@@ -294,14 +292,8 @@ server.registerTool("get_library_stats", {
   },
 }, async ({ topN }) => {
   const stats = await music.getLibraryStats(topN ?? 15);
-  const bpmMap = getGenreBpmMap();
-  const genresWithBpm = Object.entries(stats.genres).map(([genre, count]) => ({
-    genre,
-    count,
-    estimatedBpmRange: bpmMap[genre] ?? estimateBpmRange(genre),
-  }));
   return {
-    content: [{ type: "text", text: JSON.stringify({ ...stats, genresWithBpm }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(stats, null, 2) }],
   };
 });
 

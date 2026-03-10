@@ -6,7 +6,6 @@ MCP server for controlling Apple Music on macOS via JXA (JavaScript for Automati
 
 - `src/index.ts` — MCP server entry point, tool registration (27 tools)
 - `src/music.ts` — JXA wrapper functions that shell out to `osascript`
-- `src/bpm.ts` — Genre-to-BPM range mapping for tempo estimation
 - `src/wikidata.ts` — Wikidata SPARQL lookup for song metadata (genres, key, BPM, producers, songwriters, identifiers)
 
 ## Running
