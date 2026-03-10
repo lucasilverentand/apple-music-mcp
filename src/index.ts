@@ -8,7 +8,7 @@ import { lookupSong } from "./wikidata.ts";
 
 const server = new McpServer({
   name: "apple-music",
-  version: "0.2.0",
+  version: "0.2.1",
 });
 
 // ── Playback Controls ──
