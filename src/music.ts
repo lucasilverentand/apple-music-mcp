@@ -63,7 +63,25 @@ export interface TrackInfo {
   year: number;
   trackNumber: number;
   persistentID: string;
+  bpm: number;
+  playedCount: number;
+  skippedCount: number;
+  rating: number;
+  dateAdded: string;
+  playedDate: string;
   favorited?: boolean;
+}
+
+export interface TrackDetails extends TrackInfo {
+  composer: string;
+  grouping: string;
+  comment: string;
+  sampleRate: number;
+  bitRate: number;
+  kind: string;
+  discNumber: number;
+  discCount: number;
+  size: number;
 }
 
 export interface PlaylistInfo {
@@ -86,7 +104,43 @@ function trackFields(favProp?: string): string {
     duration: t.duration(),
     year: t.year(),
     trackNumber: t.trackNumber(),
-    persistentID: t.persistentID()${favField}
+    persistentID: t.persistentID(),
+    bpm: t.bpm(),
+    playedCount: t.playedCount(),
+    skippedCount: t.skippedCount(),
+    rating: t.rating(),
+    dateAdded: t.dateAdded().toISOString(),
+    playedDate: t.playedDate() ? t.playedDate().toISOString() : null${favField}
+  })`;
+}
+
+function trackDetailFields(favProp?: string): string {
+  const favField = favProp ? `, favorited: t.${favProp}()` : "";
+  return `({
+    name: t.name(),
+    artist: t.artist(),
+    album: t.album(),
+    albumArtist: t.albumArtist(),
+    genre: t.genre(),
+    duration: t.duration(),
+    year: t.year(),
+    trackNumber: t.trackNumber(),
+    persistentID: t.persistentID(),
+    bpm: t.bpm(),
+    playedCount: t.playedCount(),
+    skippedCount: t.skippedCount(),
+    rating: t.rating(),
+    dateAdded: t.dateAdded().toISOString(),
+    playedDate: t.playedDate() ? t.playedDate().toISOString() : null,
+    composer: t.composer(),
+    grouping: t.grouping(),
+    comment: t.comment(),
+    sampleRate: t.sampleRate(),
+    bitRate: t.bitRate(),
+    kind: t.kind(),
+    discNumber: t.discNumber(),
+    discCount: t.discCount(),
+    size: t.size()${favField}
   })`;
 }
 
@@ -201,10 +255,14 @@ export async function getPlaylistTracks(
   `);
 }
 
-export async function createPlaylist(name: string): Promise<PlaylistInfo> {
+export async function createPlaylist(
+  name: string,
+  folder?: boolean,
+): Promise<PlaylistInfo> {
+  const kind = folder ? "folderPlaylist" : "playlist";
   return runJxa<PlaylistInfo>(`
     const Music = Application("Music");
-    const p = Music.make({new: "playlist", withProperties: {name: ${JSON.stringify(name)}}});
+    const p = Music.make({new: "${kind}", withProperties: {name: ${JSON.stringify(name)}}});
     JSON.stringify({
       name: p.name(),
       persistentID: p.persistentID(),
@@ -330,5 +388,241 @@ export async function addToLibrary(): Promise<void> {
     if (Music.playerState() === "stopped") throw new Error("No track is currently playing.");
     const t = Music.currentTrack();
     Music.duplicate(t, {to: Music.sources[0]});
+  `);
+}
+
+export async function movePlaylistToFolder(
+  playlistName: string,
+  folderName: string,
+): Promise<void> {
+  await runJxa(`
+    const Music = Application("Music");
+    const playlist = Music.playlists.byName(${JSON.stringify(playlistName)});
+    const folder = Music.playlists.byName(${JSON.stringify(folderName)});
+    Music.move(playlist, {to: folder});
+  `);
+}
+
+// ── Metadata & Smart Organization ──
+
+export async function getTrackDetails(persistentID: string): Promise<TrackDetails> {
+  const favProp = await getFavoriteProp();
+  return runJxa<TrackDetails>(`
+    const Music = Application("Music");
+    const lib = Music.playlists.byName("Library");
+    const found = lib.tracks.whose({persistentID: ${JSON.stringify(persistentID)}})();
+    if (found.length === 0) throw new Error("Track not found");
+    const t = found[0];
+    JSON.stringify(${trackDetailFields(favProp)});
+  `);
+}
+
+export async function setBpm(persistentID: string, bpm: number): Promise<void> {
+  await runJxa(`
+    const Music = Application("Music");
+    const lib = Music.playlists.byName("Library");
+    const found = lib.tracks.whose({persistentID: ${JSON.stringify(persistentID)}})();
+    if (found.length === 0) throw new Error("Track not found");
+    found[0].bpm = ${bpm};
+  `);
+}
+
+export interface LibraryStats {
+  totalTracks: number;
+  totalDuration: number;
+  genres: Record<string, number>;
+  topArtists: { name: string; count: number }[];
+  mostPlayed: { name: string; artist: string; playedCount: number; persistentID: string }[];
+  mostSkipped: { name: string; artist: string; skippedCount: number; persistentID: string }[];
+  decades: Record<string, number>;
+  favoriteCount: number;
+  ratedCount: number;
+  bpmSetCount: number;
+}
+
+export async function getLibraryStats(topN = 15): Promise<LibraryStats> {
+  const favProp = await getFavoriteProp();
+  return runJxa<LibraryStats>(`
+    const Music = Application("Music");
+    const lib = Music.playlists.byName("Library");
+    const tracks = lib.tracks();
+    const genres = {};
+    const artists = {};
+    const decades = {};
+    const played = [];
+    const skipped = [];
+    let totalDuration = 0;
+    let favoriteCount = 0;
+    let ratedCount = 0;
+    let bpmSetCount = 0;
+
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      const g = t.genre();
+      if (g) genres[g] = (genres[g] || 0) + 1;
+
+      const a = t.artist();
+      if (a) artists[a] = (artists[a] || 0) + 1;
+
+      const y = t.year();
+      if (y > 0) {
+        const decade = Math.floor(y / 10) * 10 + "s";
+        decades[decade] = (decades[decade] || 0) + 1;
+      }
+
+      totalDuration += t.duration();
+
+      const pc = t.playedCount();
+      if (pc > 0) played.push({name: t.name(), artist: a, playedCount: pc, persistentID: t.persistentID()});
+
+      const sc = t.skippedCount();
+      if (sc > 0) skipped.push({name: t.name(), artist: a, skippedCount: sc, persistentID: t.persistentID()});
+
+      if (t.${favProp}()) favoriteCount++;
+      if (t.rating() > 0) ratedCount++;
+      if (t.bpm() > 0) bpmSetCount++;
+    }
+
+    played.sort((a, b) => b.playedCount - a.playedCount);
+    skipped.sort((a, b) => b.skippedCount - a.skippedCount);
+
+    const topArtists = Object.entries(artists)
+      .map(([name, count]) => ({name, count}))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, ${topN});
+
+    JSON.stringify({
+      totalTracks: tracks.length,
+      totalDuration,
+      genres,
+      topArtists,
+      mostPlayed: played.slice(0, ${topN}),
+      mostSkipped: skipped.slice(0, ${topN}),
+      decades,
+      favoriteCount,
+      ratedCount,
+      bpmSetCount
+    });
+  `);
+}
+
+export interface TrackCriteria {
+  genre?: string;
+  bpmMin?: number;
+  bpmMax?: number;
+  yearMin?: number;
+  yearMax?: number;
+  favoritesOnly?: boolean;
+  minPlayedCount?: number;
+  maxPlayedCount?: number;
+  artist?: string;
+  sortBy?: "playedCount" | "dateAdded" | "name" | "artist" | "bpm" | "random";
+  limit?: number;
+}
+
+export async function getTracksByCriteria(criteria: TrackCriteria): Promise<TrackInfo[]> {
+  const favProp = await getFavoriteProp();
+  const limit = criteria.limit ?? 50;
+  const criteriaJson = JSON.stringify(criteria);
+  return runJxa<TrackInfo[]>(`
+    const Music = Application("Music");
+    const lib = Music.playlists.byName("Library");
+    const tracks = lib.tracks();
+    const c = ${criteriaJson};
+    const results = [];
+
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (c.genre && t.genre() !== c.genre) continue;
+      if (c.bpmMin && t.bpm() < c.bpmMin) continue;
+      if (c.bpmMax && t.bpm() > c.bpmMax) continue;
+      if (c.yearMin && t.year() < c.yearMin) continue;
+      if (c.yearMax && t.year() > c.yearMax) continue;
+      if (c.favoritesOnly && !t.${favProp}()) continue;
+      if (c.minPlayedCount != null && t.playedCount() < c.minPlayedCount) continue;
+      if (c.maxPlayedCount != null && t.playedCount() > c.maxPlayedCount) continue;
+      if (c.artist && t.artist() !== c.artist) continue;
+      results.push(t);
+    }
+
+    const sortBy = c.sortBy || "name";
+    if (sortBy === "random") {
+      for (let i = results.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = results[i]; results[i] = results[j]; results[j] = tmp;
+      }
+    } else {
+      results.sort((a, b) => {
+        if (sortBy === "playedCount") return b.playedCount() - a.playedCount();
+        if (sortBy === "dateAdded") return b.dateAdded().getTime() - a.dateAdded().getTime();
+        if (sortBy === "bpm") return b.bpm() - a.bpm();
+        if (sortBy === "artist") return a.artist().localeCompare(b.artist());
+        return a.name().localeCompare(b.name());
+      });
+    }
+
+    JSON.stringify(results.slice(0, ${limit}).map(t => ${trackFields(favProp)}));
+  `);
+}
+
+export async function createSmartPlaylist(
+  name: string,
+  criteria: TrackCriteria,
+): Promise<{ playlist: PlaylistInfo; tracksAdded: number }> {
+  const favProp = await getFavoriteProp();
+  const limit = criteria.limit ?? 50;
+  const criteriaJson = JSON.stringify(criteria);
+  return runJxa<{ playlist: PlaylistInfo; tracksAdded: number }>(`
+    const Music = Application("Music");
+    const lib = Music.playlists.byName("Library");
+    const tracks = lib.tracks();
+    const c = ${criteriaJson};
+    const matched = [];
+
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (c.genre && t.genre() !== c.genre) continue;
+      if (c.bpmMin && t.bpm() < c.bpmMin) continue;
+      if (c.bpmMax && t.bpm() > c.bpmMax) continue;
+      if (c.yearMin && t.year() < c.yearMin) continue;
+      if (c.yearMax && t.year() > c.yearMax) continue;
+      if (c.favoritesOnly && !t.${favProp}()) continue;
+      if (c.minPlayedCount != null && t.playedCount() < c.minPlayedCount) continue;
+      if (c.maxPlayedCount != null && t.playedCount() > c.maxPlayedCount) continue;
+      if (c.artist && t.artist() !== c.artist) continue;
+      matched.push(t);
+    }
+
+    const sortBy = c.sortBy || "name";
+    if (sortBy === "random") {
+      for (let i = matched.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = matched[i]; matched[i] = matched[j]; matched[j] = tmp;
+      }
+    } else {
+      matched.sort((a, b) => {
+        if (sortBy === "playedCount") return b.playedCount() - a.playedCount();
+        if (sortBy === "dateAdded") return b.dateAdded().getTime() - a.dateAdded().getTime();
+        if (sortBy === "bpm") return b.bpm() - a.bpm();
+        if (sortBy === "artist") return a.artist().localeCompare(b.artist());
+        return a.name().localeCompare(b.name());
+      });
+    }
+
+    const selected = matched.slice(0, ${limit});
+    const p = Music.make({new: "playlist", withProperties: {name: ${JSON.stringify(name)}}});
+    for (const t of selected) {
+      Music.duplicate(t, {to: p});
+    }
+
+    JSON.stringify({
+      playlist: {
+        name: p.name(),
+        persistentID: p.persistentID(),
+        class: p.class(),
+        trackCount: selected.length
+      },
+      tracksAdded: selected.length
+    });
   `);
 }

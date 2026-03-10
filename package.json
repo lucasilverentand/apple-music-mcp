@@ -1,6 +1,6 @@
 {
   "name": "apple-music-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for controlling Apple Music via JXA",
   "module": "src/index.ts",
   "type": "module",

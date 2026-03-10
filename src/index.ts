@@ -2,10 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as music from "./music.ts";
+import { estimateBpmRange, getGenreBpmMap } from "./bpm.ts";
+import { lookupSong } from "./wikidata.ts";
 
 const server = new McpServer({
   name: "apple-music",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // ── Playback Controls ──
@@ -123,14 +125,16 @@ server.registerTool("get_playlist_tracks", {
 });
 
 server.registerTool("create_playlist", {
-  description: "Create a new empty playlist in Apple Music.",
+  description: "Create a new empty playlist or playlist folder in Apple Music.",
   inputSchema: {
     name: z.string().describe("Name for the new playlist"),
+    folder: z.boolean().optional().describe("If true, create a folder playlist instead of a regular playlist"),
   },
-}, async ({ name }) => {
-  const playlist = await music.createPlaylist(name);
+}, async ({ name, folder }) => {
+  const playlist = await music.createPlaylist(name, folder);
+  const kind = folder ? "folder" : "playlist";
   return {
-    content: [{ type: "text", text: `Created playlist "${playlist.name}" (ID: ${playlist.persistentID}).` }],
+    content: [{ type: "text", text: `Created ${kind} "${playlist.name}" (ID: ${playlist.persistentID}).` }],
   };
 });
 
@@ -238,6 +242,149 @@ server.registerTool("add_to_library", {
 }, async () => {
   await music.addToLibrary();
   return { content: [{ type: "text", text: "Current track added to library." }] };
+});
+
+// ── Organization ──
+
+server.registerTool("move_playlist_to_folder", {
+  description: "Move a playlist into a folder playlist. The folder must already exist.",
+  inputSchema: {
+    playlist: z.string().describe("Name of the playlist to move"),
+    folder: z.string().describe("Name of the destination folder"),
+  },
+}, async ({ playlist, folder }) => {
+  await music.movePlaylistToFolder(playlist, folder);
+  return { content: [{ type: "text", text: `Moved "${playlist}" into folder "${folder}".` }] };
+});
+
+// ── Metadata & Smart Organization ──
+
+server.registerTool("get_track_details", {
+  description:
+    "Get full metadata for a single track by persistent ID. Returns all standard fields plus composer, grouping, comment, sampleRate, bitRate, kind, discNumber, and size.",
+  inputSchema: {
+    persistentID: z.string().describe("Persistent ID of the track"),
+  },
+}, async ({ persistentID }) => {
+  const details = await music.getTrackDetails(persistentID);
+  const bpmEstimate = details.bpm === 0 ? estimateBpmRange(details.genre) : undefined;
+  const result = bpmEstimate ? { ...details, estimatedBpmRange: bpmEstimate } : details;
+  return {
+    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+  };
+});
+
+server.registerTool("set_bpm", {
+  description: "Set the BPM (beats per minute) on a track. Useful for manually tagging tempo since Apple Music streaming tracks often have BPM=0.",
+  inputSchema: {
+    persistentID: z.string().describe("Persistent ID of the track"),
+    bpm: z.number().min(1).max(500).describe("BPM value to set"),
+  },
+}, async ({ persistentID, bpm }) => {
+  await music.setBpm(persistentID, bpm);
+  return { content: [{ type: "text", text: `BPM set to ${bpm}.` }] };
+});
+
+server.registerTool("get_library_stats", {
+  description:
+    "Get aggregated library statistics: genre distribution, top artists, most played/skipped tracks, decade distribution, favorite and rated counts. Runs in a single JXA pass for performance.",
+  inputSchema: {
+    topN: z.number().optional().describe("Number of top items to return per category (default 15)"),
+  },
+}, async ({ topN }) => {
+  const stats = await music.getLibraryStats(topN ?? 15);
+  const bpmMap = getGenreBpmMap();
+  const genresWithBpm = Object.entries(stats.genres).map(([genre, count]) => ({
+    genre,
+    count,
+    estimatedBpmRange: bpmMap[genre] ?? estimateBpmRange(genre),
+  }));
+  return {
+    content: [{ type: "text", text: JSON.stringify({ ...stats, genresWithBpm }, null, 2) }],
+  };
+});
+
+server.registerTool("get_tracks_by_criteria", {
+  description:
+    "Find tracks matching flexible filter criteria: genre, BPM range, year range, favorites only, play count range, artist, with sorting options. Returns up to `limit` tracks.",
+  inputSchema: {
+    genre: z.string().optional().describe("Exact genre name to filter by"),
+    bpmMin: z.number().optional().describe("Minimum BPM (only matches tracks with BPM set)"),
+    bpmMax: z.number().optional().describe("Maximum BPM (only matches tracks with BPM set)"),
+    yearMin: z.number().optional().describe("Minimum release year"),
+    yearMax: z.number().optional().describe("Maximum release year"),
+    favoritesOnly: z.boolean().optional().describe("Only return favorited tracks"),
+    minPlayedCount: z.number().optional().describe("Minimum play count"),
+    maxPlayedCount: z.number().optional().describe("Maximum play count"),
+    artist: z.string().optional().describe("Exact artist name to filter by"),
+    sortBy: z
+      .enum(["playedCount", "dateAdded", "name", "artist", "bpm", "random"])
+      .optional()
+      .describe("Sort order for results (default: name)"),
+    limit: z.number().optional().describe("Max tracks to return (default 50)"),
+  },
+}, async ({ genre, bpmMin, bpmMax, yearMin, yearMax, favoritesOnly, minPlayedCount, maxPlayedCount, artist, sortBy, limit }) => {
+  const tracks = await music.getTracksByCriteria({
+    genre, bpmMin, bpmMax, yearMin, yearMax, favoritesOnly,
+    minPlayedCount, maxPlayedCount, artist, sortBy, limit,
+  });
+  return {
+    content: [{ type: "text", text: JSON.stringify(tracks, null, 2) }],
+  };
+});
+
+server.registerTool("create_smart_playlist", {
+  description:
+    "Create a new playlist and populate it with tracks matching filter criteria in one atomic operation. Uses the same filters as get_tracks_by_criteria.",
+  inputSchema: {
+    name: z.string().describe("Name for the new playlist"),
+    genre: z.string().optional().describe("Exact genre name to filter by"),
+    bpmMin: z.number().optional().describe("Minimum BPM"),
+    bpmMax: z.number().optional().describe("Maximum BPM"),
+    yearMin: z.number().optional().describe("Minimum release year"),
+    yearMax: z.number().optional().describe("Maximum release year"),
+    favoritesOnly: z.boolean().optional().describe("Only include favorited tracks"),
+    minPlayedCount: z.number().optional().describe("Minimum play count"),
+    maxPlayedCount: z.number().optional().describe("Maximum play count"),
+    artist: z.string().optional().describe("Exact artist name to filter by"),
+    sortBy: z
+      .enum(["playedCount", "dateAdded", "name", "artist", "bpm", "random"])
+      .optional()
+      .describe("Sort order for track selection (default: name)"),
+    limit: z.number().optional().describe("Max tracks to include (default 50)"),
+  },
+}, async ({ name, genre, bpmMin, bpmMax, yearMin, yearMax, favoritesOnly, minPlayedCount, maxPlayedCount, artist, sortBy, limit }) => {
+  const result = await music.createSmartPlaylist(name, {
+    genre, bpmMin, bpmMax, yearMin, yearMax, favoritesOnly,
+    minPlayedCount, maxPlayedCount, artist, sortBy, limit,
+  });
+  return {
+    content: [{
+      type: "text",
+      text: `Created playlist "${result.playlist.name}" (ID: ${result.playlist.persistentID}) with ${result.tracksAdded} track(s).`,
+    }],
+  };
+});
+
+// ── Wikidata Lookup ──
+
+server.registerTool("wikidata_lookup", {
+  description:
+    "Look up a song on Wikidata to get rich metadata not available in Apple Music: detailed genres, musical key, BPM, record label, producers, songwriters, ISRC, Spotify ID, MusicBrainz ID, and more. Use the currently playing track or provide a song name and artist.",
+  inputSchema: {
+    songName: z.string().describe("Name of the song to look up"),
+    artistName: z.string().optional().describe("Artist name to narrow results"),
+  },
+}, async ({ songName, artistName }) => {
+  const results = await lookupSong(songName, artistName);
+  if (results.length === 0) {
+    return {
+      content: [{ type: "text", text: `No Wikidata results found for "${songName}"${artistName ? ` by ${artistName}` : ""}.` }],
+    };
+  }
+  return {
+    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+  };
 });
 
 // ── Start Server ──
