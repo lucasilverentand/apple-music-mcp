@@ -4,9 +4,33 @@
   "description": "MCP server for controlling Apple Music via JXA",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "bin": {
+    "apple-music-mcp": "src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
   "scripts": {
     "start": "bun run src/index.ts"
+  },
+  "keywords": [
+    "mcp",
+    "apple-music",
+    "music",
+    "jxa",
+    "macos",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucasilverentand/apple-music-mcp.git"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest"
