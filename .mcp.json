@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "apple-music": {
+      "command": "bun",
+      "args": ["run", "/Users/luca/Developer/apple-music-mcp/src/index.ts"]
+    }
+  }
+}

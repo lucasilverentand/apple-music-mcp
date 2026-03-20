@@ -130,13 +130,25 @@ server.registerTool("create_playlist", {
   inputSchema: {
     name: z.string().describe("Name for the new playlist"),
     folder: z.boolean().optional().describe("If true, create a folder playlist instead of a regular playlist"),
+    description: z.string().optional().describe("Description text for the playlist"),
   },
-}, async ({ name, folder }) => {
-  const playlist = await music.createPlaylist(name, folder);
+}, async ({ name, folder, description }) => {
+  const playlist = await music.createPlaylist(name, folder, description);
   const kind = folder ? "folder" : "playlist";
   return {
     content: [{ type: "text", text: `Created ${kind} "${playlist.name}" (ID: ${playlist.persistentID}).` }],
   };
+});
+
+server.registerTool("set_playlist_description", {
+  description: "Set or update the description text of a playlist.",
+  inputSchema: {
+    playlist: z.string().describe("Name of the playlist"),
+    description: z.string().describe("Description text to set"),
+  },
+}, async ({ playlist, description }) => {
+  await music.setPlaylistDescription(playlist, description);
+  return { content: [{ type: "text", text: `Description updated for "${playlist}".` }] };
 });
 
 server.registerTool("add_to_playlist", {

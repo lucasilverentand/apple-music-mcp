@@ -226,13 +226,20 @@ export async function searchTracks(
 export async function listPlaylists(): Promise<PlaylistInfo[]> {
   return runJxa<PlaylistInfo[]>(`
     const Music = Application("Music");
-    const playlists = Music.playlists();
-    JSON.stringify(playlists.map(p => ({
-      name: p.name(),
-      persistentID: p.persistentID(),
-      class: p.class(),
-      trackCount: p.tracks().length
-    })));
+    const ps = Music.playlists;
+    const names = ps.name();
+    const pids = ps.persistentID();
+    const classes = ps.class();
+    const result = [];
+    for (let i = 0; i < names.length; i++) {
+      result.push({
+        name: names[i],
+        persistentID: pids[i],
+        class: classes[i],
+        trackCount: Music.playlists[i].tracks.length
+      });
+    }
+    JSON.stringify(result);
   `);
 }
 
@@ -258,17 +265,32 @@ export async function getPlaylistTracks(
 export async function createPlaylist(
   name: string,
   folder?: boolean,
+  description?: string,
 ): Promise<PlaylistInfo> {
   const kind = folder ? "folderPlaylist" : "playlist";
+  const descProp = description
+    ? `, description: ${JSON.stringify(description)}`
+    : "";
   return runJxa<PlaylistInfo>(`
     const Music = Application("Music");
-    const p = Music.make({new: "${kind}", withProperties: {name: ${JSON.stringify(name)}}});
+    const p = Music.make({new: "${kind}", withProperties: {name: ${JSON.stringify(name)}${descProp}}});
     JSON.stringify({
       name: p.name(),
       persistentID: p.persistentID(),
       class: p.class(),
       trackCount: 0
     });
+  `);
+}
+
+export async function setPlaylistDescription(
+  playlistName: string,
+  description: string,
+): Promise<void> {
+  await runJxa(`
+    const Music = Application("Music");
+    const p = Music.playlists.byName(${JSON.stringify(playlistName)});
+    p.description = ${JSON.stringify(description)};
   `);
 }
 
@@ -445,7 +467,22 @@ export async function getLibraryStats(topN = 15): Promise<LibraryStats> {
   return runJxa<LibraryStats>(`
     const Music = Application("Music");
     const lib = Music.playlists.byName("Library");
-    const tracks = lib.tracks();
+    const t = lib.tracks;
+    const totalTracks = t.length;
+
+    // Bulk property access — one Apple Event per property instead of per track
+    const allGenres = t.genre();
+    const allArtists = t.artist();
+    const allYears = t.year();
+    const allDurations = t.duration();
+    const allPlayedCounts = t.playedCount();
+    const allSkippedCounts = t.skippedCount();
+    const allNames = t.name();
+    const allPersistentIDs = t.persistentID();
+    const allRatings = t.rating();
+    const allBpms = t.bpm();
+    const allFavs = t.${favProp}();
+
     const genres = {};
     const artists = {};
     const decades = {};
@@ -456,31 +493,30 @@ export async function getLibraryStats(topN = 15): Promise<LibraryStats> {
     let ratedCount = 0;
     let bpmSetCount = 0;
 
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i];
-      const g = t.genre();
+    for (let i = 0; i < totalTracks; i++) {
+      const g = allGenres[i];
       if (g) genres[g] = (genres[g] || 0) + 1;
 
-      const a = t.artist();
+      const a = allArtists[i];
       if (a) artists[a] = (artists[a] || 0) + 1;
 
-      const y = t.year();
+      const y = allYears[i];
       if (y > 0) {
         const decade = Math.floor(y / 10) * 10 + "s";
         decades[decade] = (decades[decade] || 0) + 1;
       }
 
-      totalDuration += t.duration();
+      totalDuration += allDurations[i];
 
-      const pc = t.playedCount();
-      if (pc > 0) played.push({name: t.name(), artist: a, playedCount: pc, persistentID: t.persistentID()});
+      const pc = allPlayedCounts[i];
+      if (pc > 0) played.push({name: allNames[i], artist: a, playedCount: pc, persistentID: allPersistentIDs[i]});
 
-      const sc = t.skippedCount();
-      if (sc > 0) skipped.push({name: t.name(), artist: a, skippedCount: sc, persistentID: t.persistentID()});
+      const sc = allSkippedCounts[i];
+      if (sc > 0) skipped.push({name: allNames[i], artist: a, skippedCount: sc, persistentID: allPersistentIDs[i]});
 
-      if (t.${favProp}()) favoriteCount++;
-      if (t.rating() > 0) ratedCount++;
-      if (t.bpm() > 0) bpmSetCount++;
+      if (allFavs[i]) favoriteCount++;
+      if (allRatings[i] > 0) ratedCount++;
+      if (allBpms[i] > 0) bpmSetCount++;
     }
 
     played.sort((a, b) => b.playedCount - a.playedCount);
@@ -492,7 +528,7 @@ export async function getLibraryStats(topN = 15): Promise<LibraryStats> {
       .slice(0, ${topN});
 
     JSON.stringify({
-      totalTracks: tracks.length,
+      totalTracks,
       totalDuration,
       genres,
       topArtists,
@@ -527,41 +563,96 @@ export async function getTracksByCriteria(criteria: TrackCriteria): Promise<Trac
   return runJxa<TrackInfo[]>(`
     const Music = Application("Music");
     const lib = Music.playlists.byName("Library");
-    const tracks = lib.tracks();
+    const t = lib.tracks;
+    const total = t.length;
     const c = ${criteriaJson};
-    const results = [];
 
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i];
-      if (c.genre && t.genre() !== c.genre) continue;
-      if (c.bpmMin && t.bpm() < c.bpmMin) continue;
-      if (c.bpmMax && t.bpm() > c.bpmMax) continue;
-      if (c.yearMin && t.year() < c.yearMin) continue;
-      if (c.yearMax && t.year() > c.yearMax) continue;
-      if (c.favoritesOnly && !t.${favProp}()) continue;
-      if (c.minPlayedCount != null && t.playedCount() < c.minPlayedCount) continue;
-      if (c.maxPlayedCount != null && t.playedCount() > c.maxPlayedCount) continue;
-      if (c.artist && t.artist() !== c.artist) continue;
-      results.push(t);
+    // Bulk fetch only the properties needed for filtering
+    const allGenres = c.genre ? t.genre() : null;
+    const allBpms = (c.bpmMin || c.bpmMax) ? t.bpm() : null;
+    const allYears = (c.yearMin || c.yearMax) ? t.year() : null;
+    const allFavs = c.favoritesOnly ? t.${favProp}() : null;
+    const allPlayedCounts = (c.minPlayedCount != null || c.maxPlayedCount != null || c.sortBy === "playedCount") ? t.playedCount() : null;
+    const allArtists = c.artist || c.sortBy === "artist" ? t.artist() : null;
+
+    // Filter to matching indices
+    const matchIdx = [];
+    for (let i = 0; i < total; i++) {
+      if (allGenres && allGenres[i] !== c.genre) continue;
+      if (allBpms && c.bpmMin && allBpms[i] < c.bpmMin) continue;
+      if (allBpms && c.bpmMax && allBpms[i] > c.bpmMax) continue;
+      if (allYears && c.yearMin && allYears[i] < c.yearMin) continue;
+      if (allYears && c.yearMax && allYears[i] > c.yearMax) continue;
+      if (allFavs && !allFavs[i]) continue;
+      if (c.minPlayedCount != null && allPlayedCounts[i] < c.minPlayedCount) continue;
+      if (c.maxPlayedCount != null && allPlayedCounts[i] > c.maxPlayedCount) continue;
+      if (allArtists && c.artist && allArtists[i] !== c.artist) continue;
+      matchIdx.push(i);
     }
 
+    // Bulk fetch sort/output properties only for matched tracks
     const sortBy = c.sortBy || "name";
+    // We need names for output and possibly sorting
+    const allNames = t.name();
+
     if (sortBy === "random") {
-      for (let i = results.length - 1; i > 0; i--) {
+      for (let i = matchIdx.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        const tmp = results[i]; results[i] = results[j]; results[j] = tmp;
+        const tmp = matchIdx[i]; matchIdx[i] = matchIdx[j]; matchIdx[j] = tmp;
       }
+    } else if (sortBy === "playedCount") {
+      const pc = allPlayedCounts || t.playedCount();
+      matchIdx.sort((a, b) => pc[b] - pc[a]);
+    } else if (sortBy === "dateAdded") {
+      const allDates = t.dateAdded();
+      matchIdx.sort((a, b) => allDates[b].getTime() - allDates[a].getTime());
+    } else if (sortBy === "bpm") {
+      const bpms = allBpms || t.bpm();
+      matchIdx.sort((a, b) => bpms[b] - bpms[a]);
+    } else if (sortBy === "artist") {
+      const arts = allArtists || t.artist();
+      matchIdx.sort((a, b) => arts[a].localeCompare(arts[b]));
     } else {
-      results.sort((a, b) => {
-        if (sortBy === "playedCount") return b.playedCount() - a.playedCount();
-        if (sortBy === "dateAdded") return b.dateAdded().getTime() - a.dateAdded().getTime();
-        if (sortBy === "bpm") return b.bpm() - a.bpm();
-        if (sortBy === "artist") return a.artist().localeCompare(b.artist());
-        return a.name().localeCompare(b.name());
-      });
+      matchIdx.sort((a, b) => allNames[a].localeCompare(allNames[b]));
     }
 
-    JSON.stringify(results.slice(0, ${limit}).map(t => ${trackFields(favProp)}));
+    const selected = matchIdx.slice(0, ${limit});
+
+    // Bulk fetch remaining output properties
+    const outArtists = allArtists || t.artist();
+    const outAlbums = t.album();
+    const outAlbumArtists = t.albumArtist();
+    const outGenres = allGenres || t.genre();
+    const outDurations = t.duration();
+    const outYears = allYears || t.year();
+    const outTrackNums = t.trackNumber();
+    const outPIDs = t.persistentID();
+    const outBpms = allBpms || t.bpm();
+    const outPC = allPlayedCounts || t.playedCount();
+    const outSC = t.skippedCount();
+    const outRatings = t.rating();
+    const outDAs = t.dateAdded();
+    const outPDs = t.playedDate();
+    const outFavs = allFavs || t.${favProp}();
+
+    JSON.stringify(selected.map(i => ({
+      name: allNames[i],
+      artist: outArtists[i],
+      album: outAlbums[i],
+      albumArtist: outAlbumArtists[i],
+      genre: outGenres[i],
+      duration: outDurations[i],
+      year: outYears[i],
+      trackNumber: outTrackNums[i],
+      persistentID: outPIDs[i],
+      bpm: outBpms[i],
+      playedCount: outPC[i],
+      skippedCount: outSC[i],
+      rating: outRatings[i],
+      dateAdded: outDAs[i].toISOString(),
+      playedDate: outPDs[i] ? outPDs[i].toISOString() : null,
+      favorited: outFavs[i]
+    })));
   `);
 }
 
@@ -575,44 +666,61 @@ export async function createSmartPlaylist(
   return runJxa<{ playlist: PlaylistInfo; tracksAdded: number }>(`
     const Music = Application("Music");
     const lib = Music.playlists.byName("Library");
-    const tracks = lib.tracks();
+    const t = lib.tracks;
+    const total = t.length;
     const c = ${criteriaJson};
-    const matched = [];
 
-    for (let i = 0; i < tracks.length; i++) {
-      const t = tracks[i];
-      if (c.genre && t.genre() !== c.genre) continue;
-      if (c.bpmMin && t.bpm() < c.bpmMin) continue;
-      if (c.bpmMax && t.bpm() > c.bpmMax) continue;
-      if (c.yearMin && t.year() < c.yearMin) continue;
-      if (c.yearMax && t.year() > c.yearMax) continue;
-      if (c.favoritesOnly && !t.${favProp}()) continue;
-      if (c.minPlayedCount != null && t.playedCount() < c.minPlayedCount) continue;
-      if (c.maxPlayedCount != null && t.playedCount() > c.maxPlayedCount) continue;
-      if (c.artist && t.artist() !== c.artist) continue;
-      matched.push(t);
+    // Bulk fetch properties needed for filtering
+    const allGenres = c.genre ? t.genre() : null;
+    const allBpms = (c.bpmMin || c.bpmMax) ? t.bpm() : null;
+    const allYears = (c.yearMin || c.yearMax) ? t.year() : null;
+    const allFavs = c.favoritesOnly ? t.${favProp}() : null;
+    const allPlayedCounts = (c.minPlayedCount != null || c.maxPlayedCount != null || c.sortBy === "playedCount") ? t.playedCount() : null;
+    const allArtists = c.artist || c.sortBy === "artist" ? t.artist() : null;
+
+    const matchIdx = [];
+    for (let i = 0; i < total; i++) {
+      if (allGenres && allGenres[i] !== c.genre) continue;
+      if (allBpms && c.bpmMin && allBpms[i] < c.bpmMin) continue;
+      if (allBpms && c.bpmMax && allBpms[i] > c.bpmMax) continue;
+      if (allYears && c.yearMin && allYears[i] < c.yearMin) continue;
+      if (allYears && c.yearMax && allYears[i] > c.yearMax) continue;
+      if (allFavs && !allFavs[i]) continue;
+      if (c.minPlayedCount != null && allPlayedCounts[i] < c.minPlayedCount) continue;
+      if (c.maxPlayedCount != null && allPlayedCounts[i] > c.maxPlayedCount) continue;
+      if (allArtists && c.artist && allArtists[i] !== c.artist) continue;
+      matchIdx.push(i);
     }
 
     const sortBy = c.sortBy || "name";
+    const allNames = t.name();
+
     if (sortBy === "random") {
-      for (let i = matched.length - 1; i > 0; i--) {
+      for (let i = matchIdx.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        const tmp = matched[i]; matched[i] = matched[j]; matched[j] = tmp;
+        const tmp = matchIdx[i]; matchIdx[i] = matchIdx[j]; matchIdx[j] = tmp;
       }
+    } else if (sortBy === "playedCount") {
+      const pc = allPlayedCounts || t.playedCount();
+      matchIdx.sort((a, b) => pc[b] - pc[a]);
+    } else if (sortBy === "dateAdded") {
+      const allDates = t.dateAdded();
+      matchIdx.sort((a, b) => allDates[b].getTime() - allDates[a].getTime());
+    } else if (sortBy === "bpm") {
+      const bpms = allBpms || t.bpm();
+      matchIdx.sort((a, b) => bpms[b] - bpms[a]);
+    } else if (sortBy === "artist") {
+      const arts = allArtists || t.artist();
+      matchIdx.sort((a, b) => arts[a].localeCompare(arts[b]));
     } else {
-      matched.sort((a, b) => {
-        if (sortBy === "playedCount") return b.playedCount() - a.playedCount();
-        if (sortBy === "dateAdded") return b.dateAdded().getTime() - a.dateAdded().getTime();
-        if (sortBy === "bpm") return b.bpm() - a.bpm();
-        if (sortBy === "artist") return a.artist().localeCompare(b.artist());
-        return a.name().localeCompare(b.name());
-      });
+      matchIdx.sort((a, b) => allNames[a].localeCompare(allNames[b]));
     }
 
-    const selected = matched.slice(0, ${limit});
+    const selected = matchIdx.slice(0, ${limit});
+    const trackRefs = lib.tracks();
     const p = Music.make({new: "playlist", withProperties: {name: ${JSON.stringify(name)}}});
-    for (const t of selected) {
-      Music.duplicate(t, {to: p});
+    for (const idx of selected) {
+      Music.duplicate(trackRefs[idx], {to: p});
     }
 
     JSON.stringify({
@@ -626,3 +734,4 @@ export async function createSmartPlaylist(
     });
   `);
 }
+

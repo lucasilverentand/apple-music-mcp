@@ -4,7 +4,7 @@ MCP server for controlling Apple Music on macOS via JXA (JavaScript for Automati
 
 ## Architecture
 
-- `src/index.ts` — MCP server entry point, tool registration (27 tools)
+- `src/index.ts` — MCP server entry point, tool registration (28 tools)
 - `src/music.ts` — JXA wrapper functions that shell out to `osascript`
 - `src/wikidata.ts` — Wikidata SPARQL lookup for song metadata (genres, key, BPM, producers, songwriters, identifiers)
 
@@ -22,6 +22,7 @@ bun run src/index.ts  # starts stdio MCP server
 - Track `persistentID` is the stable identifier used across tools
 - Never use `console.log()` in the server — it corrupts stdio JSON-RPC. Use `console.error()`.
 - Apple Music streaming tracks have `bpm: 0` — use `set_bpm` to tag manually
-- `get_library_stats` aggregates inside JXA in a single pass for performance
-- `get_tracks_by_criteria` and `create_smart_playlist` share the same filter logic
+- `get_library_stats` uses bulk JXA property access (`lib.tracks.genre()`) for performance — one Apple Event per property instead of per track
+- `get_tracks_by_criteria` and `create_smart_playlist` share the same bulk-access filter logic
 - `wikidata_lookup` queries the public Wikidata SPARQL endpoint — no API keys needed
+- Playlist `description` is readable/writable via JXA
